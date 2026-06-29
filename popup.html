@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Res-Find</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 class="header-title">Res-Find</h1>
+      <span class="header-badge" id="totalCount">0</span>
+    </header>
+
+    <!-- Filter tabs -->
+    <nav class="filters" id="filters">
+      <button class="filter-btn active" data-type="all">
+        <span class="filter-icon">\u00B7</span>
+        全部
+        <span class="filter-count" id="countAll">0</span>
+      </button>
+      <button class="filter-btn" data-type="image">
+        <span class="filter-icon filter-icon--image">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <rect x="2" y="2" width="20" height="20" rx="3" stroke="currentColor" stroke-width="2"/>
+            <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="2"/>
+            <path d="M22 16l-5-5-6 6-3-3-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </span>
+        图片
+        <span class="filter-count" id="countImage">0</span>
+      </button>
+      <button class="filter-btn" data-type="video">
+        <span class="filter-icon filter-icon--video">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <rect x="2" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="2"/>
+            <path d="M18 10l4-2.5v9L18 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        视频
+        <span class="filter-count" id="countVideo">0</span>
+      </button>
+      <button class="filter-btn" data-type="stream">
+        <span class="filter-icon filter-icon--stream">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2v20M2 12h20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M4 4l16 16M20 4L4 20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          </svg>
+        </span>
+        直播流
+        <span class="filter-count" id="countStream">0</span>
+      </button>
+      <button class="filter-btn" data-type="audio">
+        <span class="filter-icon filter-icon--audio">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="2"/>
+            <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </span>
+        音频
+        <span class="filter-count" id="countAudio">0</span>
+      </button>
+    </nav>
+
+    <!-- Actions bar -->
+    <div class="actions" id="actions">
+      <button class="btn btn-sm" id="scanNowBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+          <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        重新扫描
+      </button>
+      <button class="btn btn-sm btn-primary" id="downloadSelectedBtn" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        下载选中
+      </button>
+      <button class="btn btn-sm btn-danger" id="clearBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+          <path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2" stroke="currentColor" stroke-width="2"/>
+          <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" stroke-width="2"/>
+        </svg>
+        清空
+      </button>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status" id="status">
+      <span id="statusText">加载中...</span>
+      <button class="btn-link" id="retryBtn" style="display:none;">重试</button>
+    </div>
+
+    <!-- Resource list -->
+    <div class="list" id="resourceList">
+      <div class="list-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+          <path d="M12 8v4M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+        </svg>
+        <p id="emptyMessage">未检测到资源<br><span class="text-muted">浏览页面后点击"重新扫描"</span></p>
+      </div>
+    </div>
+
+    <!-- Template -->
+    <template id="resourceItem">
+      <div class="resource-item" data-type="">
+        <label class="resource-check">
+          <input type="checkbox" class="resource-checkbox">
+        </label>
+        <div class="resource-preview"></div>
+        <div class="resource-info">
+          <div class="resource-name"></div>
+          <div class="resource-meta">
+            <span class="resource-type-badge"></span>
+            <span class="resource-size"></span>
+          </div>
+          <div class="resource-url" title=""></div>
+        </div>
+        <div class="resource-actions">
+          <button class="btn-icon" title="下载">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="btn-icon" title="复制链接">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="btn-icon" title="新标签页打开">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M15 3h6v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M10 14L21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
