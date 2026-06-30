@@ -86,13 +86,7 @@
     }
   }
 
-  /** 格式化文件大小为人类可读字符串 */
-  function formatSize(bytes) {
-    if (!bytes || bytes <= 0) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  }
+  // formatSize、guessFormat、looksLikeRandomHash 由 shared.js 提供
 
   /** 截断 URL 用于显示 */
   function truncateUrl(url, max = 50) {
@@ -345,26 +339,6 @@
     });
   }
 
-  // Guess format from URL + type (client-side fallback when background hasn't stored it)
-  function guessFormat(url, type) {
-    const m = url.match(/\.([a-z0-9]+)(?:[\?#]|$)/i);
-    const ext = m ? m[1].toLowerCase() : '';
-    const fmtMap = {
-      png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WEBP',
-      avif: 'AVIF', bmp: 'BMP', svg: 'SVG', ico: 'ICO', tif: 'TIFF', tiff: 'TIFF',
-      mp4: 'MP4', webm: 'WEBM', ogv: 'OGV', mov: 'MOV', avi: 'AVI',
-      mkv: 'MKV', flv: 'FLV', wmv: 'WMV', m4v: 'M4V', '3gp': '3GP',
-      mp3: 'MP3', wav: 'WAV', flac: 'FLAC', aac: 'AAC', m4a: 'M4A',
-      ogg: 'OGG', opus: 'OPUS', wma: 'WMA', aiff: 'AIFF',
-      m3u8: 'M3U8', mpd: 'MPD'
-    };
-    if (fmtMap[ext]) return fmtMap[ext];
-    if (type === 'stream' && /m3u8/i.test(url)) return 'M3U8';
-    if (type === 'stream' && /mpd/i.test(url)) return 'MPD';
-    if (ext && ext.length <= 5) return ext.toUpperCase();
-    return type === 'image' ? 'IMG' : type === 'video' ? 'VID' : type === 'audio' ? 'AUD' : type === 'stream' ? 'STRM' : '?';
-  }
-
   function updateCounts() {
     const counts = { all: allResources.length, image: 0, video: 0, stream: 0, audio: 0 };
     for (const r of allResources) {
@@ -495,12 +469,7 @@
     }
 
     // Name — prefer human-readable `name` (from alt/title/context) over URL-derived `filename`
-    const isRandomName = (s) => s && (
-      /^[a-f0-9]{16,}$/i.test(s) ||                                    // pure hex hash
-      /^[a-zA-Z0-9+/=_\-]{20,}$/.test(s) && /[a-z]/.test(s) && /[A-Z]/.test(s) || // base64-like
-      /^[a-zA-Z0-9]{24,}$/.test(s)                                      // long random alpha
-    );
-    const hasGoodName = res.name && res.name.length > 2 && !isRandomName(res.name)
+    const hasGoodName = res.name && res.name.length > 2 && !looksLikeRandomHash(res.name)
       && res.name !== res.filename;
     const displayName = hasGoodName ? res.name : (res.filename || 'unknown');
     const nameEl = template.querySelector('.resource-name');

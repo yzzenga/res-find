@@ -107,19 +107,43 @@
     recordedChunks = [];
 
     // 创建 AudioContext 用于混合音频轨道
-    const audioCtx = new AudioContext();
+    var audioCtx;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      // 浏览器自动播放策略可能导致 AudioContext 处于 suspended 状态
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    } catch (e) {
+      status.textContent = '音频上下文创建失败：' + e.message;
+      status.className = 'status error';
+      startBtn.disabled = false;
+      return;
+    }
 
     // 创建混音输出目标
-    const dest = audioCtx.createMediaStreamDestination();
+    var dest = audioCtx.createMediaStreamDestination();
 
     // 将外部音频文件连接到混音器
-    const audioSource = audioCtx.createMediaElementSource(audioEl);
-    audioSource.connect(dest);
+    // 注意：createMediaElementSource 在跨域无 CORS 时会抛出 SecurityError
+    try {
+      var audioSource = audioCtx.createMediaElementSource(audioEl);
+      audioSource.connect(dest);
+    } catch (e) {
+      status.textContent = '音频源连接失败（跨域限制）：' + e.message;
+      status.className = 'status error';
+      audioCtx.close();
+      startBtn.disabled = false;
+      return;
+    }
 
     // 播放两个媒体源
     videoEl.muted = true; // 丢弃视频自带的音轨，使用外部音频源
     videoEl.play();
-    audioEl.play();
+    audioEl.play().catch(function (e) {
+      // 音频播放可能被自动播放策略阻止，但不影响合成（AudioContext 接管了音频轨）
+      console.warn('音频 play() 被阻止，AudioContext 将接管:', e.message);
+    });
 
     // 用 Canvas 以 30fps 捕获视频帧
     const stream = canvas.captureStream(30);

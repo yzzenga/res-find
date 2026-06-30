@@ -34,6 +34,12 @@
   const BATCH_DEBOUNCE = 500;     // 批量报告资源的防抖间隔（毫秒）
   const STREAM_KEYWORDS = /m3u8|mpd|\.ts\b|segment|chunklist|manifest/i;
 
+  // ====== 自适应扫描参数 ======
+  const SCAN_EMPTY_THRESHOLD = 5;   // 连续空扫描次数上限，之后开始降频
+  const SCAN_MAX_INTERVAL = 30000;  // 最大扫描间隔（30 秒后停止周期性扫描）
+  let scanEmptyCount = 0;           // 连续空扫描计数器
+  let scanCurrentInterval = SCAN_INTERVAL; // 当前自适应间隔
+
   let pendingBatch = new Map();    // 待批处理发送的资源集合 url -> { url, type, ... }
   let batchTimer = null;           // 批处理计时器
   let scanTimer = null;            // 周期扫描计时器
@@ -419,8 +425,22 @@
   // ========== DOM 扫描 ==========
   // 遍历页面 DOM 树，查找所有媒体元素并提取名称
 
+  /** 重新安排扫描定时器（使用当前自适应间隔） */
+  function rescheduleScan() {
+    if (scanTimer) clearInterval(scanTimer);
+    if (scanCurrentInterval < SCAN_MAX_INTERVAL) {
+      scanTimer = setInterval(scanDOM, scanCurrentInterval);
+    } else {
+      // 达到最大间隔后停止周期性扫描，仅靠 MutationObserver 触发
+      scanTimer = null;
+    }
+  }
+
   function scanDOM() {
     if (extensionInvalidated) return;
+    // 页面不可见时跳过扫描（不计入空扫描计数）
+    if (document.hidden) return;
+
     const results = [];
 
     // --- 扫描图片元素 ---
@@ -642,6 +662,21 @@
       });
     }
 
+    // ====== 自适应扫描调整：根据结果调整扫描频率 ======
+    if (results.length === 0) {
+      scanEmptyCount++;
+      if (scanEmptyCount >= SCAN_EMPTY_THRESHOLD && scanCurrentInterval < SCAN_MAX_INTERVAL) {
+        // 连续空扫描，逐步递增间隔：3s → 4.5s → 6.75s → 10s → 15s → 22.5s → 30s（停止）
+        scanCurrentInterval = Math.min(scanCurrentInterval * 1.5, SCAN_MAX_INTERVAL);
+        rescheduleScan();
+      }
+    } else if (scanEmptyCount > 0 || scanCurrentInterval > SCAN_INTERVAL) {
+      // 发现资源，重置为正常间隔
+      scanEmptyCount = 0;
+      scanCurrentInterval = SCAN_INTERVAL;
+      rescheduleScan();
+    }
+
     // Process results (dedup + retroactive name update)
     const seen = new Set();
     for (const r of results) {
@@ -683,6 +718,20 @@
 
   // Periodic re-scan
   scanTimer = setInterval(scanDOM, SCAN_INTERVAL);
+
+  // ========== 可见性变化监听 ==========
+  // 页面重新可见时重置自适应状态并立即扫描
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && sniffingEnabled && !extensionInvalidated) {
+      if (scanEmptyCount > 0 || scanCurrentInterval > SCAN_INTERVAL) {
+        scanEmptyCount = 0;
+        scanCurrentInterval = SCAN_INTERVAL;
+        rescheduleScan();
+      }
+      // 延迟扫描等待渲染完成
+      setTimeout(scanDOM, 300);
+    }
+  });
 
   // ========== MutationObserver 动态元素监听 ==========
   // 监控 DOM 变化，捕获通过 JS 动态添加到页面的媒体元素
@@ -750,6 +799,12 @@
         if (needsScan) break;
       }
       if (needsScan) {
+        // 动态检测到新元素时重置自适应状态，确保下次扫描以正常频率执行
+        if (scanEmptyCount >= SCAN_EMPTY_THRESHOLD || scanCurrentInterval > SCAN_INTERVAL) {
+          scanEmptyCount = 0;
+          scanCurrentInterval = SCAN_INTERVAL;
+          rescheduleScan();
+        }
         setTimeout(scanDOM, 100);
       }
     });
@@ -848,6 +903,8 @@
       sniffingEnabled = message.enabled;
       if (sniffingEnabled) {
         // Resume: restart periodic scan, reconnect observer, flush any pending
+        scanEmptyCount = 0;
+        scanCurrentInterval = SCAN_INTERVAL;
         scanTimer = setInterval(scanDOM, SCAN_INTERVAL);
         if (observer) {
           observer.observe(document.documentElement, {

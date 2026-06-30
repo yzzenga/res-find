@@ -13,6 +13,8 @@
  * - disabledTabs（Set）：记录用户手动关闭嗅探的标签页
  */
 
+importScripts('shared.js');
+
 const tabResources = new Map();       // tabId -> Set<url>（URL 去重集合）
 const tabResourceMeta = new Map();    // tabId -> Map<url, ResourceMeta>（完整资源元数据）
 const disabledTabs = new Set();       // tabId -> 该标签页已禁用嗅探
@@ -49,54 +51,8 @@ function classifyResource(url, contentType) {
 
 // ========== 资源存储 ==========
 
-/**
- * 检测文件名是否为自动生成的随机哈希值（而非人类可读的有意义名称）
- * 用于过滤 blob 哈希、UUID、base64 等无意义文件名
- * @param {string} str - 待检测的文件名
- * @returns {boolean} true 表示看起来是随机哈希
- */
-function looksLikeRandomHash(str) {
-  if (!str || str.length < 8) return false;
-  const s = String(str);
-  // 纯十六进制字符串（MD5/SHA1 哈希、无连字符的 UUID、blob 生成的 UUID）
-  if (/^[a-f0-9]{16,}$/i.test(s)) return true;
-  // UUID 标准格式：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s)) return true;
-  // Base64 风格（>=20 字符，混合大小写字母 + 数字 + 特殊字符）
-  if (/^[a-zA-Z0-9+/=_\-]{20,}$/.test(s) && /[a-z]/.test(s) && /[A-Z]/.test(s) && /\d/.test(s)) return true;
-  // 超过 24 位的纯字母数字（无分隔符）—— blob UUID 符合此特征
-  if (/^[a-zA-Z0-9]{24,}$/.test(s)) return true;
-  // data: 和 blob: URI（协议部分有意义，但哈希部分无意义）
-  if (/^data:/i.test(s) || /^blob:/i.test(s)) return true;
-  return false;
-}
-
-/**
- * 根据 URL 后缀和资源类型推断显示格式标签（如 "PNG", "MP4", "M3U8"）
- * @param {string} url - 资源 URL
- * @param {string} type - 资源类型
- * @returns {string} 格式标签
- */
-function guessFormat(url, type) {
-  const ext = tryGetExtension(url) || '';
-  // 已知格式名称映射表
-  const fmtMap = {
-    png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WEBP',
-    avif: 'AVIF', bmp: 'BMP', svg: 'SVG', ico: 'ICO', tif: 'TIFF', tiff: 'TIFF',
-    mp4: 'MP4', webm: 'WEBM', ogv: 'OGV', mov: 'MOV', avi: 'AVI',
-    mkv: 'MKV', flv: 'FLV', wmv: 'WMV', m4v: 'M4V', '3gp': '3GP',
-    mp3: 'MP3', wav: 'WAV', flac: 'FLAC', aac: 'AAC', m4a: 'M4A',
-    ogg: 'OGG', opus: 'OPUS', wma: 'WMA', aiff: 'AIFF',
-    m3u8: 'M3U8', mpd: 'MPD'
-  };
-  if (fmtMap[ext]) return fmtMap[ext];
-  // URL 中包含流媒体关键词但没有标准后缀
-  if (type === 'stream' && /m3u8/i.test(url)) return 'M3U8';
-  if (type === 'stream' && /mpd/i.test(url)) return 'MPD';
-  // 兜底：将后缀大写作为格式名
-  if (ext && ext.length <= 5) return ext.toUpperCase();
-  return type === 'image' ? 'IMG' : type === 'video' ? 'VID' : type === 'audio' ? 'AUD' : type === 'stream' ? 'STRM' : '?';
-}
+// guessFormat、tryGetExtension、looksLikeRandomHash、formatSize、cleanUrl
+// 由 shared.js 通过 importScripts 提供
 
 /**
  * 智能生成文件名的核心函数
@@ -179,38 +135,6 @@ function getFilename(url, type, nameHint) {
   } catch {
     return `${type}`;
   }
-}
-
-/**
- * 从 URL 中提取文件扩展名
- * @param {string} url
- * @returns {string} 小写扩展名，无扩展名则返回空字符串
- */
-function tryGetExtension(url) {
-  const m = url.match(/\.([a-z0-9]+)(?:[\?#]|$)/i);
-  return m ? m[1].toLowerCase() : '';
-}
-
-/**
- * 移除 URL 中的追踪参数，仅用于显示（下载时仍使用原始 URL）
- */
-function cleanUrl(url) {
-  try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
-  } catch { return url; }
-}
-
-/**
- * 格式化文件大小为人类可读的字符串
- * @param {number} bytes - 字节数
- * @returns {string} 如 "1.5 MB", "340 KB"
- */
-function formatSize(bytes) {
-  if (!bytes || bytes === -1) return '';
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 /**
@@ -387,10 +311,14 @@ chrome.webRequest.onErrorOccurred.addListener(
 
 // ========== 标签页生命周期管理 ==========
 
-/** 标签页关闭时自动清理该页面的资源缓存 */
+/** 标签页关闭时自动清理该页面的资源缓存和挂起的请求 */
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTabResources(tabId);
   disabledTabs.delete(tabId);
+  // 清理该标签页仍在进行中的网络请求记录，防止内存泄漏
+  for (const [reqId, req] of pendingRequests) {
+    if (req.tabId === tabId) pendingRequests.delete(reqId);
+  }
 });
 
 // ========== 消息处理 ==========
@@ -471,13 +399,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'merge_download': {
       const { videoUrl, audioUrl, baseName, tabId: msgTabId } = message;
       const tid = sender.tab?.id || msgTabId;
-      chrome.downloads.download({ url: videoUrl, filename: `${baseName}_video.mp4` });
-      chrome.downloads.download({ url: audioUrl, filename: `${baseName}_audio.mp4` });
+      // 从 URL 推断实际扩展名，避免所有音频被强制命名为 .mp4
+      const videoExt = tryGetExtension(videoUrl) || 'mp4';
+      const audioExt = tryGetExtension(audioUrl) || 'mp4';
+      chrome.downloads.download({
+        url: videoUrl,
+        filename: baseName + '_video.' + videoExt,
+        conflictAction: 'uniquify'
+      }).catch(function (err) {
+        console.error('视频下载失败:', err);
+      });
+      chrome.downloads.download({
+        url: audioUrl,
+        filename: baseName + '_audio.' + audioExt,
+        conflictAction: 'uniquify'
+      }).catch(function (err) {
+        console.error('音频下载失败:', err);
+      });
       // 打开合成工具页面（浏览器端使用 MediaRecorder 合成）
       const mergeUrl = chrome.runtime.getURL('merge.html')
-        + `?video=${encodeURIComponent(videoUrl)}`
-        + `&audio=${encodeURIComponent(audioUrl)}`
-        + `&name=${encodeURIComponent(baseName)}`;
+        + '?video=' + encodeURIComponent(videoUrl)
+        + '&audio=' + encodeURIComponent(audioUrl)
+        + '&name=' + encodeURIComponent(baseName);
       chrome.tabs.create({ url: mergeUrl, active: false });
       sendResponse({ ok: true });
       break;
