@@ -7,6 +7,17 @@
   if (window.__resFindInjected) return;
   window.__resFindInjected = true;
 
+  // --- Inject main-world hook script ---
+  // This must run as early as possible to intercept JS-level API calls.
+  (function injectHook() {
+    try {
+      var s = document.createElement('script');
+      s.src = chrome.runtime.getURL('injected.js');
+      s.onload = function () { s.remove(); };
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) { /* injection failed */ }
+  })();
+
   const SCAN_INTERVAL = 3000;     // full DOM scan every 3s
   const BATCH_DEBOUNCE = 500;     // batch resource reports
   const STREAM_KEYWORDS = /m3u8|mpd|\.ts\b|segment|chunklist|manifest/i;
@@ -426,6 +437,15 @@
         const type = classifyByUrl(url) || 'audio';
         results.push({ url, type, name: aName });
       }
+      // Check data-src/data-url/data-audio-src for lazy-loaded audio (common in SPA players)
+      const dataSrc = audio.dataset.src || audio.dataset.url || audio.getAttribute('data-audio-src');
+      if (dataSrc && !dataSrc.startsWith('blob:') && !dataSrc.startsWith('data:')) {
+        const url = normalizedUrl(dataSrc);
+        if (url !== audio.src) {
+          const type = classifyByUrl(url) || 'audio';
+          results.push({ url, type, name: aName || dataSrc });
+        }
+      }
       audio.querySelectorAll('source').forEach(source => {
         if (source.src) {
           const url = normalizedUrl(source.src);
@@ -616,14 +636,26 @@
 
   // ---- MutationObserver for dynamic elements ----
 
+  function handleSrcMutation(target) {
+    var tag = target.tagName?.toLowerCase();
+    if (!['audio', 'video', 'source'].includes(tag)) return;
+    var url = target.currentSrc || target.src || target.getAttribute('src');
+    if (url && !url.startsWith('blob:') && !url.startsWith('data:') && url.length > 5) {
+      var type = classifyByUrl(url) || (tag === 'audio' ? 'audio' : 'video');
+      reportResource(url, type, { name: deriveName(target, url) });
+    }
+  }
+
   try {
-    observer = new MutationObserver((mutations) => {
-      let needsScan = false;
-      for (const mutation of mutations) {
+    observer = new MutationObserver(function (mutations) {
+      var needsScan = false;
+      for (var m = 0; m < mutations.length; m++) {
+        var mutation = mutations[m];
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-          for (const node of mutation.addedNodes) {
+          for (var n = 0; n < mutation.addedNodes.length; n++) {
+            var node = mutation.addedNodes[n];
             if (node.nodeType === 1) {
-              const tag = node.tagName?.toLowerCase();
+              var tag = node.tagName?.toLowerCase();
               // Direct media elements or containers
               if (['img', 'video', 'audio', 'source'].includes(tag) ||
                   node.querySelector?.('img, video, audio, source, [data-src], [data-url]')) {
@@ -631,7 +663,7 @@
                 break;
               }
               // Elements with href/data-* pointing to media
-              const attr = node.getAttribute?.('href') || node.getAttribute?.('data-src') ||
+              var attr = node.getAttribute?.('href') || node.getAttribute?.('data-src') ||
                            node.getAttribute?.('data-url') || node.getAttribute?.('data-video');
               if (attr && /\.(png|jpg|jpeg|webp|gif|mp4|webm|m3u8|mp3|m4s|ts)\b/i.test(attr)) {
                 needsScan = true;
@@ -648,6 +680,22 @@
             }
           }
         }
+        // Detect src/data-src attribute changes on existing media elements
+        if (mutation.type === 'attributes') {
+          var t = mutation.target;
+          var tTag = t.tagName?.toLowerCase();
+          if (['audio', 'video', 'source'].includes(tTag)) {
+            if (mutation.attributeName === 'src') {
+              handleSrcMutation(t);
+            } else {
+              // data-src / data-url change -> trigger full scan
+              needsScan = true;
+            }
+          } else if (['data-src', 'data-url'].indexOf(mutation.attributeName) !== -1) {
+            // Non-media element getting data-src -> might be lazy-loading a media container
+            needsScan = true;
+          }
+        }
         if (needsScan) break;
       }
       if (needsScan) {
@@ -656,7 +704,9 @@
     });
     observer.observe(document.documentElement, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src', 'data-src', 'data-url']
     });
   } catch (e) { /* MutationObserver not available */ }
 
@@ -751,7 +801,9 @@
         if (observer) {
           observer.observe(document.documentElement, {
             childList: true,
-            subtree: true
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['src', 'data-src', 'data-url']
           });
         }
         scanDOM();
@@ -765,6 +817,37 @@
       sendResponse({ ok: true });
     }
     return true; // keep channel open for async
+  });
+
+  // ---- Communication from injected.js (main-world hook) ----
+
+  window.addEventListener('message', function (event) {
+    if (event.source !== window) return;
+    if (!event.data || event.data.source !== '__resFind_hook') return;
+
+    var type = event.data.type;
+    var url = event.data.url;
+    if (!url && type !== 'mseCreated') return;
+
+    switch (type) {
+      case 'mediaSrc':
+      case 'audioCtor':
+        reportResource(url, classifyByUrl(url) || (event.data.tag === 'AUDIO' ? 'audio' : 'video'), {
+          name: '',
+          initiator: location.href
+        });
+        break;
+      case 'apiExtract':
+        reportResource(url, classifyByUrl(url) || 'audio', {
+          name: '',
+          initiator: location.href
+        });
+        break;
+      case 'mseCreated':
+        // MSE stream detected — the player element should appear soon
+        setTimeout(scanDOM, 100);
+        break;
+    }
   });
 
   // ---- Expose API for popup ----
