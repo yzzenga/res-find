@@ -1,5 +1,17 @@
-// Res-Find Content Script
-// Sniffs resources via PerformanceObserver, DOM scanning, MutationObserver
+/**
+ * Res-Find Content Script
+ * ========================
+ * 注入到每个页面中的内容脚本，负责：
+ * 1. 注入 MAIN World 的 Hook 脚本（injected.js）
+ * 2. 通过 PerformanceObserver 嗅探已加载的资源
+ * 3. 通过 DOM 扫描（scanDOM）发现页面中的媒体元素
+ * 4. 通过 MutationObserver 监控动态添加的媒体元素
+ * 5. 通过 IntersectionObserver 处理懒加载视频（如抖音）
+ * 6. 识别特定站点（B站、抖音）的全局数据结构提取资源
+ *
+ * 与 Background Service Worker 通过 chrome.runtime.sendMessage 通信，
+ * 与 Injected Hook 脚本通过 window.postMessage 通信。
+ */
 
 (function () {
   'use strict';
@@ -7,40 +19,46 @@
   if (window.__resFindInjected) return;
   window.__resFindInjected = true;
 
-  // --- Inject main-world hook script ---
-  // This must run as early as possible to intercept JS-level API calls.
+  // --- 注入 MAIN World 的 Hook 脚本 ---
+  // 必须在页面加载早期执行，以拦截 JS 层面的 API 调用
   (function injectHook() {
     try {
       var s = document.createElement('script');
       s.src = chrome.runtime.getURL('injected.js');
       s.onload = function () { s.remove(); };
       (document.head || document.documentElement).appendChild(s);
-    } catch (e) { /* injection failed */ }
+    } catch (e) { /* 注入失败 */ }
   })();
 
-  const SCAN_INTERVAL = 3000;     // full DOM scan every 3s
-  const BATCH_DEBOUNCE = 500;     // batch resource reports
+  const SCAN_INTERVAL = 3000;     // 每 3 秒进行一次全 DOM 扫描
+  const BATCH_DEBOUNCE = 500;     // 批量报告资源的防抖间隔（毫秒）
   const STREAM_KEYWORDS = /m3u8|mpd|\.ts\b|segment|chunklist|manifest/i;
 
-  let pendingBatch = new Map();    // url -> { url, type, ... }
-  let batchTimer = null;
-  let scanTimer = null;
-  let observer = null;
-  let sniffingEnabled = true;      // controlled by popup toggle
-  let extensionInvalidated = false; // set to true when chrome.runtime dies
+  let pendingBatch = new Map();    // 待批处理发送的资源集合 url -> { url, type, ... }
+  let batchTimer = null;           // 批处理计时器
+  let scanTimer = null;            // 周期扫描计时器
+  let observer = null;             // MutationObserver 实例
+  let sniffingEnabled = true;      // 由 Popup 的嗅探开关控制
+  let extensionInvalidated = false; // chrome.runtime 断开时设为 true
 
-  // When extension context is invalidated we just set a flag that gates
-  // all further extension API calls. Timers/observers remain alive but
-  // return early — no cleanup needed since the page will eventually
-  // navigate or be refreshed.
+  /**
+   * 扩展上下文失效处理
+   * 当 chrome.runtime 断开时，设置失效标志并清除批处理计时器。
+   * 不再调用任何扩展 API，但页面定时器/观察者保持存活，
+   * 页面刷新或导航后自然清理。
+   */
   function handleInvalidated() {
     if (extensionInvalidated) return;
     extensionInvalidated = true;
     if (batchTimer) { clearTimeout(batchTimer); batchTimer = null; }
   }
 
-  // ---- Helpers ----
+  // ========== 工具函数 ==========
 
+  /**
+   * 仅通过 URL 判断资源类型（无需 Content-Type）
+   * 注意：比 background.js 中的 classifyResource 少了 Content-Type 参数
+   */
   function classifyByUrl(url) {
     if (!url || url.startsWith('data:') || url.startsWith('blob:')) return null;
     const u = url.split('?')[0].split('#')[0];
@@ -52,6 +70,7 @@
     return null;
   }
 
+  /** 标准化 URL：解析为绝对路径并去除片段标识（#） */
   function normalizedUrl(url) {
     try {
       const u = new URL(url, location.href);
@@ -59,17 +78,25 @@
     } catch { return url; }
   }
 
-  // A name is "good" if it looks like a real human-readable title (not a hash/URL/auto-generated)
+  /**
+   * 判断名称是否为"好"的（人类可读的标题，而非自动生成的哈希/URL）
+   * 用于筛选页面中提取的名称，避免使用无意义的文件名
+   */
   function isGoodName(name) {
     if (!name || name.length < 3 || name.length > 200) return false;
-    // Skip pure random hashes
-    if (/^[a-f0-9]{16,}$/i.test(name)) return false;
-    if (/^[a-zA-Z0-9]{24,}$/.test(name)) return false;
-    // Must contain at least one CJK, letter, or meaningful character
-    if (!/[\u4e00-\u9fff\w]/.test(name)) return false;
+    if (/^[a-f0-9]{16,}$/i.test(name)) return false;  // 纯十六进制哈希
+    if (/^[a-zA-Z0-9]{24,}$/.test(name)) return false; // 长随机字符串
+    if (!/[\u4e00-\u9fff\w]/.test(name)) return false; // 必须包含中文字符或单词字符
     return true;
   }
 
+  /**
+   * 向后台发送资源报告（带防抖批量处理）
+   * 同一 URL 在短时间内多次报告会合并更新
+   * @param {string} url - 资源 URL
+   * @param {string} type - 资源类型
+   * @param {Object} extra - 额外信息（名称、分组ID等）
+   */
   function reportResource(url, type, extra) {
     const normalized = normalizedUrl(url);
     const existing = pendingBatch.get(normalized);
@@ -100,9 +127,13 @@
     scheduleFlush();
   }
 
-  // Try to derive a human-readable name from a media element
+  /**
+   * 从媒体元素的 DOM 上下文推断人类可读的名称
+   * 优先级链：
+   *   title > alt > aria-label > data-* > 父级链接文本 > figcaption > 标题元素 > 卡片布局
+   */
   function deriveName(element, url) {
-    // Priority: title > alt > aria-label > data-* > parent context > surrounding text
+    // 优先级 1：元素自身属性
     let name = element.getAttribute('title')
       || element.getAttribute('alt')
       || element.getAttribute('aria-label')
@@ -112,22 +143,22 @@
     if (name && name.trim().length > 0 && name.trim().length < 150) {
       return name.trim();
     }
-    // For images: check parent link content / figcaption / parent heading
+    // 优先级 2：图片特有——检查父级链接、figcaption、标题
     if (element.tagName === 'IMG') {
       const parent = element.parentElement;
       if (parent) {
-        // <a><img></a> → link text or title
+        // <a><img></a> 模式 → 使用链接文本或 title
         if (parent.tagName === 'A') {
           if (parent.title && parent.title.trim().length > 0) return parent.title.trim();
           const aText = parent.textContent.trim();
           if (aText && aText.length > 1 && aText.length < 120) return aText;
         }
-        // <figure><img><figcaption>caption</figcaption></figure>
+        // <figure><img><figcaption>caption</figcaption></figure> 模式
         const figcaption = parent.querySelector('figcaption');
         if (figcaption && figcaption.textContent.trim().length > 0) {
           return figcaption.textContent.trim().slice(0, 150);
         }
-        // Check sibling headings or parent headings
+        // 检查同级标题元素或父级标题
         const heading = parent.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4')
           || element.closest('section, article, div[class*="media"]')?.querySelector('h1, h2, h3, h4');
         if (heading && heading.textContent.trim().length > 0) {
@@ -142,16 +173,21 @@
     return '';
   }
 
-  // Deep context extraction for video/audio elements
+  /**
+   * 为视频/音频元素深度提取名称（相对于图片有更复杂的 DOM 结构）
+   * 尝试多种策略逐步降级：
+   *   poster > figcaption > 前一个兄弟元素 > 父级 aria-label >
+   *   标题样式元素 > 父容器兄弟 > 卡片布局遍历 > JSON-LD > URL 路径
+   */
   function deriveVideoName(element, url) {
-    // 1) poster attribute → extract readable name
+    // 策略 1：从 poster 属性提取可读名称
     if (element.tagName === 'VIDEO' && element.poster) {
       const pName = decodeURIComponent(element.poster.split('/').pop()?.split('?')[0] || '')
         .replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
       if (pName && pName.length > 3 && pName.length < 100) return pName;
     }
 
-    // 2) Check <figure> + <figcaption> — most specific media container
+    // 策略 2：检查 <figure> + <figcaption> —— 最精确的媒体容器
     const figure = element.closest('figure');
     if (figure) {
       const figCaption = figure.querySelector('figcaption');
@@ -160,21 +196,21 @@
       }
     }
 
-    // 3) Check previous sibling (title is often directly above the video)
+    // 策略 3：检查前一个兄弟元素（标题通常紧挨在视频上方）
     const prev = element.previousElementSibling;
     if (prev) {
       const t = prev.textContent.trim();
       if (t && t.length > 3 && t.length < 200) return t;
     }
 
-    // 4) Walk up 4 parent levels — aria-label, title, dedicated title elements
+    // 策略 4：向上遍历 4 层父元素，查找 aria-label 或标题样式子元素
     let el = element.parentElement;
     for (let depth = 0; depth < 4 && el; depth++) {
       const label = el.getAttribute('aria-label') || el.getAttribute('title');
       if (label && label.trim().length > 2 && label.trim().length < 200) {
         return label.trim();
       }
-      // Look for dedicated title elements (but skip generic <h1> that are page titles)
+      // 查找类名包含 title/heading/headline/name 的子元素（跳过页面主标题 h1）
       const titleEl = el.querySelector(
         ':scope > [class*="title"], :scope > [class*="heading"], ' +
         ':scope > [class*="headline"], :scope > [class*="name"], ' +
@@ -187,7 +223,7 @@
       el = el.parentElement;
     }
 
-    // 5) Check parent's previous sibling (title in a container sibling)
+    // 策略 5：检查父容器的前一个兄弟元素
     if (element.parentElement) {
       const parentSibling = element.parentElement.previousElementSibling;
       if (parentSibling) {
@@ -196,9 +232,8 @@
       }
     }
 
-    // 6) Feed-style card layout: walk up 6 levels and look for title/desc elements
-    // (handles Douyin, Bilibili feed, and other video-card layouts)
-    {
+    // 策略 6：卡片式布局遍历（适配抖音、B站等信息流）
+    // 向上走 6 层，查找标题/描述元素
       let card = element.parentElement;
       for (let depth = 0; depth < 6 && card; depth++) {
         // Look for title/desc elements anywhere inside this card (not just :scope >)
@@ -219,7 +254,7 @@
       }
     }
 
-    // 7) Check JSON-LD structured data for VideoObject (works on any page)
+    // 策略 7：检查 JSON-LD 结构化数据（适用于任何有 Schema.org 标记的页面）
     try {
       const scripts = document.querySelectorAll('script[type="application/ld+json"]');
       for (const script of scripts) {
@@ -233,9 +268,9 @@
           }
         }
       }
-    } catch (e) { /* invalid JSON-LD */ }
+    } catch (e) { /* JSON-LD 解析错误 */ }
 
-    // 7) URL path as last resort — but skip blob: and random hash URLs
+    // 策略 8：从 URL 路径提取文件名作为最终兜底
     const isBlobOrRandom = !url || url.startsWith('blob:') || /^[a-zA-Z0-9]{16,}$/.test(url.split('/').pop()?.split('?')[0] || '');
     if (!isBlobOrRandom) {
       try {
@@ -250,7 +285,13 @@
     return '';
   }
 
-  // Reverse DOM lookup: find a DOM element whose src/href matches the given URL
+  /**
+   * 反向 DOM 查找：根据资源 URL 找到对应的 DOM 元素
+   * 用于从 PerformanceObserver 捕获的资源 URL 回溯到页面元素，
+   * 从而提取 alt/title 等属性作为文件名
+   * @param {string} resourceUrl - 资源 URL
+   * @returns {Element|null} 找到的 DOM 元素，未找到则返回 null
+   */
   function findElementByUrl(resourceUrl) {
     try {
       const u = new URL(resourceUrl);
@@ -285,7 +326,12 @@
     return null;
   }
 
-  // Find og/twitter meta tag content for a media URL
+  /**
+   * 从页面 <meta> 标签中查找与资源 URL 对应的名称
+   * 例如 og:image 对应 og:title，twitter:image 对应 twitter:title
+   * @param {string} resourceUrl - 资源 URL
+   * @returns {string} 找到的名称，未找到则返回空字符串
+   */
   function findNameFromMeta(resourceUrl) {
     try {
       const url = new URL(resourceUrl).href;
@@ -333,15 +379,16 @@
     }
   }
 
-  // ---- PerformanceObserver ----
-  // Names come from URL only here; scanDOM will retroactively update them later
+  // ========== PerformanceObserver 监听 ==========
+  // 监听浏览器性能 API，捕获页面加载过程中的所有资源请求
+  // 注意：此处只能通过 URL 判断名称，后续 scanDOM 会通过 DOM 回溯更新更好名称
 
   try {
     const perfObserver = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const type = classifyByUrl(entry.name);
         if (type) {
-          // Try to find a DOM element matching this URL for a better name
+          // 尝试通过 URL 反向查找 DOM 元素，提取更有意义的名称
           const el = findElementByUrl(entry.name);
           const name = el ? deriveName(el, entry.name) : '';
           reportResource(entry.name, type, {
@@ -352,9 +399,9 @@
       }
     });
     perfObserver.observe({ entryTypes: ['resource'] });
-  } catch (e) { /* PerformanceObserver not supported */ }
+  } catch (e) { /* PerformanceObserver 不被支持 */ }
 
-  // Capture existing performance entries
+  // 捕获 PerformanceObserver 注册前已有的性能条目
   try {
     performance.getEntriesByType('resource').forEach(entry => {
       const type = classifyByUrl(entry.name);
@@ -369,13 +416,14 @@
     });
   } catch (e) { /* ignore */ }
 
-  // ---- DOM scanning ----
+  // ========== DOM 扫描 ==========
+  // 遍历页面 DOM 树，查找所有媒体元素并提取名称
 
   function scanDOM() {
     if (extensionInvalidated) return;
     const results = [];
 
-    // Images
+    // --- 扫描图片元素 ---
     document.querySelectorAll('img').forEach(img => {
       if (img.src && !img.src.startsWith('data:')) {
         const type = classifyByUrl(img.src);
@@ -393,7 +441,7 @@
       }
     });
 
-    // Videos & streams
+    // --- 扫描视频元素（含 data-src/data-url 懒加载视频） ---
     document.querySelectorAll('video').forEach(video => {
       const vName = deriveName(video, video.src);
       // Check primary src
@@ -429,7 +477,7 @@
       });
     });
 
-    // Audio
+    // --- 扫描音频元素 ---
     document.querySelectorAll('audio').forEach(audio => {
       const aName = deriveName(audio, audio.src);
       if (audio.src) {
@@ -455,15 +503,17 @@
       });
     });
 
-    // Links to media files (direct media URLs)
+    // --- 扫描指向媒体文件的链接（直接链接到图片/视频/音频的 <a> 标签） ---
     document.querySelectorAll('a[href]').forEach(a => {
       const type = classifyByUrl(a.href);
       if (type) results.push({ url: a.href, type, name: a.title || a.textContent.trim().slice(0, 100) });
     });
 
-    // ---- Site-specific video extraction from globals ----
+    // ========== 特定站点全局数据提取 ==========
+    // 从知名站点的全局 JS 变量中直接提取视频/音频 URL
+    // 这些变量在页面加载时已经包含完整的媒体信息
 
-    // Bilibili: window.__INITIAL_STATE__ contains full video URL info
+    // ---- Bilibili（B站）：window.__INITIAL_STATE__ 包含完整视频信息 ----
     try {
       const initState = window.__INITIAL_STATE__;
       if (initState) {
@@ -527,7 +577,7 @@
       }
     } catch (e) { /* __INITIAL_STATE__ parsing */ }
 
-    // Douyin: window._ROUTER_DATA.loaderData contains video metadata and URLs
+    // ---- 抖音：window._ROUTER_DATA.loaderData 包含视频元数据和 URL ----
     try {
       const routerData = window._ROUTER_DATA;
       if (routerData && routerData.loaderData) {
@@ -553,7 +603,7 @@
       }
     } catch (e) { /* _ROUTER_DATA parsing */ }
 
-    // Next.js / SSR sites: window.__NEXT_DATA__.props.pageProps
+    // ---- Next.js / SSR 站点：window.__NEXT_DATA__.props.pageProps ----
     try {
       const nextData = window.__NEXT_DATA__;
       if (nextData && nextData.props) {
@@ -634,7 +684,8 @@
   // Periodic re-scan
   scanTimer = setInterval(scanDOM, SCAN_INTERVAL);
 
-  // ---- MutationObserver for dynamic elements ----
+  // ========== MutationObserver 动态元素监听 ==========
+  // 监控 DOM 变化，捕获通过 JS 动态添加到页面的媒体元素
 
   function handleSrcMutation(target) {
     var tag = target.tagName?.toLowerCase();
@@ -710,8 +761,9 @@
     });
   } catch (e) { /* MutationObserver not available */ }
 
-  // ---- IntersectionObserver for scroll-based video detection ----
-  // When a video scrolls into view (Douyin feed), extract its name from nearby elements.
+  // ========== IntersectionObserver 滚动懒加载检测 ==========
+  // 当视频滚动到视口内时，获取附近元素的名称信息
+  // 主要用于抖音等无限滚动 feed 场景
 
   let scrollObserver = null;
   let scrollObserverReady = false;  // true after initial observation flood settles
@@ -744,12 +796,12 @@
             // For each URL, send a targeted name update
             for (const vUrl of urls) {
               try {
-            chrome.runtime.sendMessage({
-              action: 'update_resource_name',
-              url: vUrl,
-              name: name
-            }).catch(() => {});
-          } catch (e) { /* ignore */ }
+                chrome.runtime.sendMessage({
+                  action: 'update_resource_name',
+                  url: vUrl,
+                  name: name
+                }).catch(() => {});
+              } catch (e) { /* ignore */ }
             }
           }
           // Also trigger a full scan to pick up any new resources
@@ -779,9 +831,8 @@
     setTimeout(() => { scrollObserverReady = true; }, 500);
   }, 1000);
 
-  // ---- HLS.js / dash.js stream detection ----
-
-  // Patch Hls.loadSource to capture stream URLs
+  // ========== HLS.js / dash.js 流媒体检测 ==========
+  // 通过 Monkey-patch Hls.loadSource 捕获 HLS 流 URL
   if (typeof Hls !== 'undefined' && Hls.prototype?.loadSource) {
     const origLoad = Hls.prototype.loadSource;
     Hls.prototype.loadSource = function (url) {
@@ -790,7 +841,7 @@
     };
   }
 
-  // ---- Tab sniffing toggle (from popup) ----
+  // ========== 嗅探开关控制（来自 Popup） ==========
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'setSniffing') {
@@ -819,7 +870,8 @@
     return true; // keep channel open for async
   });
 
-  // ---- Communication from injected.js (main-world hook) ----
+  // ========== 与 injected.js（MAIN World Hook）通信 ==========
+  // 通过 window.postMessage 接收 Hook 脚本捕获的媒体 URL
 
   window.addEventListener('message', function (event) {
     if (event.source !== window) return;
@@ -850,14 +902,14 @@
     }
   });
 
-  // ---- Expose API for popup ----
+  // ========== 暴露 API 给 Popup（调试/手动调用） ==========
 
   window.__resFind = {
     scanNow: scanDOM,
     getResources: () => Array.from(pendingBatch.values())
   };
 
-  // Flush any remaining on page unload
+  // 页面卸载前刷新所有待处理的资源报告
   window.addEventListener('beforeunload', () => {
     if (extensionInvalidated) return;
     flushBatch();

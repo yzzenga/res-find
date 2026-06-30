@@ -1,10 +1,24 @@
-// Res-Find Page Hook — runs in page MAIN world via injected <script>
-// Intercepts JS-level APIs to capture media URLs before/during resource loading.
-// Communicates with content script via window.postMessage.
+/**
+ * Res-Find 页面 Hook 脚本
+ * ======================
+ * 通过 <script> 标签注入到页面的 MAIN World 中执行。
+ * 
+ * 为什么需要这个脚本？
+ * Chrome 扩展的 Content Script 运行在 ISOLATED World 中，
+ * 无法拦截页面 JS 对原生 API 的调用。此脚本在 MAIN World 中
+ * 通过 Monkey-patch 原生 API，捕获媒体 URL。
+ *
+ * 与 Content Script 通过 window.postMessage 通信。
+ */
+
 (function () {
   'use strict';
 
-  /* ── helpers ── */
+  /**
+   * 通过 postMessage 向 Content Script 发送消息
+   * @param {string} type - 消息类型
+   * @param {Object} payload - 消息负载
+   */
   function postMsg(type, payload) {
     window.postMessage(
       Object.assign({ source: '__resFind_hook', type: type }, payload),
@@ -12,10 +26,12 @@
     );
   }
 
+  // 匹配常见音视频和流媒体文件的正则
   var MEDIA_RE = /\.(m3u8|mpd|mp3|flac|aac|ogg|wma|m4a|opus|aiff|wav|mp4|webm)\b/i;
 
-  /* ── 1. HTMLMediaElement.prototype.src setter ──
-     Catches every assignment to element.src, no matter which framework sets it. */
+  /* ── 1. 拦截 HTMLMediaElement.prototype.src 赋值 ──
+     无论通过何种框架设置 <video>/<audio> 的 src，都能捕获。
+     在所有 hook 中优先级最高，覆盖面最广。 */
   try {
     var nativeSrcDesc = Object.getOwnPropertyDescriptor(
       HTMLMediaElement.prototype,
@@ -42,11 +58,12 @@
       });
     }
   } catch (e) {
-    /* prototype hook not supported */
+    /* prototype hook 不支持 */
   }
 
-  /* ── 2. Audio() constructor ──
-     Catches new Audio(url) pattern used by many audio-only players. */
+  /* ── 2. 拦截 Audio() 构造函数 ──
+     捕获通过 new Audio(url) 创建的音频实例，
+     许多纯音频播放器使用此模式。 */
   try {
     var OrigAudio = window.Audio;
     window.Audio = function (src) {
@@ -58,12 +75,13 @@
     };
     window.Audio.prototype = OrigAudio.prototype;
   } catch (e) {
-    /* Audio hook failed */
+    /* Audio 构造函数拦截失败 */
   }
 
-  /* ── 3. fetch() response body interception ──
-     Reads JSON API responses and scans for embedded media CDN URLs
-     (the real audio URL is often hidden inside an API JSON response). */
+  /* ── 3. 拦截 fetch() 响应体 ──
+     解析 JSON API 响应，扫描其中嵌入的媒体 CDN URL。
+     很多站点的真实音视频 URL 隐藏在 API JSON 响应中。
+     e.g. 抖音/B站的数据接口返回的 play_addr 等。 */
   try {
     var origFetch = window.fetch;
     window.fetch = function (input, init) {
@@ -82,11 +100,11 @@
       });
     };
   } catch (e) {
-    /* fetch hook failed */
+    /* fetch 拦截失败 */
   }
 
-  /* ── 4. XMLHttpRequest response body interception ──
-     Same as fetch hook but for legacy XHR-based API calls. */
+  /* ── 4. 拦截 XMLHttpRequest 响应体 ──
+     与 fetch 拦截相同，但针对仍在使用 XHR 的旧版站点。 */
   try {
     var XHR = window.XMLHttpRequest;
     var origOpen = XHR.prototype.open;
@@ -108,18 +126,19 @@
               scanForUrls(JSON.parse(this.responseText));
             }
           } catch (e) {
-            /* parse error */
+            /* JSON 解析错误 */
           }
         });
       }
       return origSend.apply(this, arguments);
     };
   } catch (e) {
-    /* XHR hook failed */
+    /* XHR 拦截失败 */
   }
 
-  /* ── 5. URL.createObjectURL (MSE/media source detection) ──
-     Detects when a MediaSource is attached to a media element via blob URL. */
+  /* ── 5. 拦截 URL.createObjectURL （MSE/MediaSource 检测） ──
+     检测 MediaSource 是否通过 blob URL 附加到媒体元素上。
+     适用于使用 MSE（Media Source Extensions）的站点。 */
   try {
     var origCreate = URL.createObjectURL;
     URL.createObjectURL = function (obj) {
@@ -130,11 +149,12 @@
       return url;
     };
   } catch (e) {
-    /* createObjectURL hook failed */
+    /* createObjectURL 拦截失败 */
   }
 
-  /* ── recursive JSON scanner ──
-     Walks a parsed API response looking for media CDN URLs. */
+  /* ── 递归 JSON 扫描器 ──
+     深度遍历解析后的 API 响应对象，查找所有匹配媒体扩展名的 URL。
+     最多递归 6 层以防止栈溢出。 */
   function scanForUrls(data, depth) {
     if (depth === undefined) depth = 0;
     if (depth > 6 || !data || typeof data !== 'object') return;

@@ -1,4 +1,9 @@
-/* Res-Find Popup Styles */
+/* =============================================
+   Res-Find 弹窗样式
+   暗色主题，支持 460px 固定宽度弹窗
+   ============================================= */
+
+/* ---------- 主题变量 ---------- */
 :root {
   --bg: #1a1b1e;
   --bg-secondary: #232529;
@@ -42,7 +47,7 @@ body {
   height: 600px;
 }
 
-/* Header */
+/* ---------- 顶栏 ---------- */
 .header {
   display: flex;
   align-items: center;
@@ -110,7 +115,7 @@ body {
 .sniff-toggle:not(.disabled) .sniff-icon--on { display: block; }
 .sniff-toggle:not(.disabled) .sniff-icon--off { display: none; }
 
-/* Sniffing disabled banner */
+/* ---------- 嗅探禁用提示条 ---------- */
 .sniff-banner {
   display: flex;
   align-items: center;
@@ -123,7 +128,7 @@ body {
   flex-shrink: 0;
 }
 
-/* Filters */
+/* ---------- 类型筛选标签 ---------- */
 .filters {
   display: flex;
   gap: 4px;
@@ -167,7 +172,7 @@ body {
   opacity: 0.7;
 }
 
-/* Format filter chips */
+/* ---------- 格式筛选标签 ---------- */
 .format-filters {
   display: flex;
   gap: 4px;
@@ -217,7 +222,7 @@ body {
   font-weight: 400;
 }
 
-/* Size filter chips (video only) */
+/* ---------- 大小筛选标签（仅视频类型显示） ---------- */
 .size-filters {
   display: flex;
   gap: 4px;
@@ -263,7 +268,7 @@ body {
   font-weight: 400;
 }
 
-/* Resource format badge */
+/* ---------- 资源格式徽章 ---------- */
 .resource-format-badge {
   font-size: 10px;
   padding: 1px 5px;
@@ -273,8 +278,16 @@ body {
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
 
-/* Search bar */
+/* ---------- 搜索栏 ---------- */
 .search-bar {
   display: flex;
   align-items: center;
@@ -330,7 +343,7 @@ body {
   color: var(--text);
 }
 
-/* Actions bar */
+/* ---------- 操作按钮栏 ---------- */
 .actions {
   display: flex;
   gap: 6px;
@@ -385,7 +398,7 @@ body {
   padding: 2px 6px;
 }
 
-/* Status */
+/* ---------- 状态栏 ---------- */
 .status {
   display: flex;
   align-items: center;
@@ -398,7 +411,7 @@ body {
   flex-shrink: 0;
 }
 
-/* Resource list */
+/* ---------- 资源列表 ---------- */
 .list {
   flex: 1;
   overflow-y: auto;
@@ -431,7 +444,7 @@ body {
 
 .text-muted { color: var(--text-muted); font-size: 12px; }
 
-/* Resource item */
+/* ---------- 资源条目 ---------- */
 .resource-item {
   display: flex;
   align-items: center;
@@ -487,20 +500,23 @@ body {
   background: #000;
 }
 
-/* Fallback icon (when preview fails or for stream type) */
+/* ---------- 资源预览缩略图 ---------- */
+
+/* 预览失败回退图标 */
+
 .resource-preview.preview-fallback {
   color: var(--text-muted);
   opacity: 0.6;
   background: var(--bg-tertiary);
 }
 
-/* Audio waveform container */
+/* 音频波形容器 */
 .resource-preview.preview-audio {
   color: var(--accent);
   background: var(--accent-bg);
 }
 
-/* Audio waveform bars */
+/* 音频波形条动画 */
 .audio-wave {
   display: flex;
   align-items: center;
@@ -587,7 +603,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Type switcher dropdown */
+/* ---------- 资源类型切换下拉菜单 ---------- */
 .resource-type-switcher {
   appearance: none;
   -webkit-appearance: none;
@@ -654,7 +670,7 @@ body {
   color: var(--text);
 }
 
-/* Toast */
+/* ---------- Toast 提示 ---------- */
 .toast {
   position: fixed;
   bottom: 16px;
@@ -676,7 +692,7 @@ body {
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
-/* Loading spinner */
+/* ---------- 加载旋转动画 ---------- */
 .spinner {
   width: 20px;
   height: 20px;
@@ -690,7 +706,8 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Preview modal overlay */
+/* ---------- 预览弹窗 ---------- */
+/* 半透明模糊遮罩层 */
 .preview-overlay {
   position: absolute;
   inset: 0;
@@ -866,7 +883,7 @@ body {
   text-align: left;
 }
 
-/* ---- Merge download button ---- */
+/* ---------- 合成下载按扭 ---------- */
 .btn-merge {
   background: var(--accent-2, #8b5cf6);
   color: white;
@@ -884,7 +901,7 @@ body {
 .btn-merge:hover { opacity: 0.85; }
 .btn-merge:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ---- Rename inline ---- */
+/* ---------- 内联重命名输入框 ---------- */
 .rename-input {
   background: var(--bg-tertiary);
   border: 1px solid var(--accent);
@@ -900,7 +917,7 @@ body {
   border-color: var(--accent-hover);
 }
 
-/* ---- Pair group indicator ---- */
+/* ---------- 音视频配对组指示 ---------- */
 .resource-item.has-group {
   border-left: 3px solid var(--accent-2, #8b5cf6);
 }

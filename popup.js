@@ -1,20 +1,31 @@
-// Res-Find Popup Script
-// Displays detected resources, handles filtering, download, copy
+/**
+ * Res-Find 弹窗脚本
+ * ==================
+ * 作为扩展 Popup 的 UI 控制器，负责：
+ * 1. 从 Background Service Worker 获取资源列表
+ * 2. 渲染资源列表（支持图片/视频/音频/流媒体四种类型）
+ * 3. 提供筛选功能（按类型、格式、大小、搜索关键词）
+ * 4. 支持单个下载、批量下载、音视频合成下载
+ * 5. 资源预览（图片/视频/音频/流媒体）
+ * 6. 嗅探开关控制
+ * 7. 资源重命名和类型手动修正
+ */
 
 (function () {
   'use strict';
 
-  let currentTabId = null;
-  let allResources = [];
-  let filteredResources = [];
-  let selectedUrls = new Set();
-  let currentFilter = 'all';
-  let currentFormat = 'all';
-  let currentSize = 'all';
-  let searchTerm = '';
-  let searchTimer = null;
-  let tabSniffingDisabled = false;
+  let currentTabId = null;           // 当前标签页 ID
+  let allResources = [];             // 所有资源列表
+  let filteredResources = [];        // 筛选后的资源列表
+  let selectedUrls = new Set();      // 用户勾选的 URL 集合
+  let currentFilter = 'all';         // 当前类型筛选
+  let currentFormat = 'all';         // 当前格式筛选
+  let currentSize = 'all';           // 当前大小筛选
+  let searchTerm = '';               // 当前搜索关键词
+  let searchTimer = null;            // 搜索防抖计时器
+  let tabSniffingDisabled = false;   // 当前标签页嗅探是否禁用
 
+  // DOM 元素缓存
   const els = {
     totalCount: document.getElementById('totalCount'),
     countAll: document.getElementById('countAll'),
@@ -46,8 +57,9 @@
     sniffBanner: document.getElementById('sniffBanner'),
   };
 
-  // ---- Utils ----
+  // ========== 工具函数 ==========
 
+  /** 根据资源类型返回徽章标签 */
   function typeBadgeLabel(type) {
     switch (type) {
       case 'image': return 'IMG';
@@ -58,6 +70,7 @@
     }
   }
 
+  /** 根据资源类型返回对应的 SVG 图标字符串 */
   function svgIcon(type) {
     switch (type) {
       case 'image':
@@ -73,6 +86,7 @@
     }
   }
 
+  /** 格式化文件大小为人类可读字符串 */
   function formatSize(bytes) {
     if (!bytes || bytes <= 0) return '';
     if (bytes < 1024) return bytes + ' B';
@@ -80,6 +94,7 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
+  /** 截断 URL 用于显示 */
   function truncateUrl(url, max = 50) {
     if (url.length <= max) return url;
     return url.substring(0, max - 3) + '...';
@@ -95,8 +110,9 @@
     return chrome.runtime.sendMessage(msg);
   }
 
-  // ---- Toast ----
+  // ========== Toast 提示 ==========
 
+  /** 显示短暂的 Toast 提示消息（2 秒后自动消失） */
   function showToast(msg) {
     const existing = document.querySelector('.toast');
     if (existing) existing.remove();
@@ -107,8 +123,9 @@
     setTimeout(() => toast.remove(), 2000);
   }
 
-  // ---- Loading state ----
+  // ========== 加载/错误状态管理 ==========
 
+  /** 设置加载状态 */
   function setLoading(loading) {
     els.statusText.textContent = loading ? '正在扫描页面资源...' : '';
     els.statusText.style.display = loading ? '' : 'none';
@@ -127,8 +144,9 @@
     </div>`;
   }
 
-  // ---- Load resources ----
+  // ========== 加载资源 ==========
 
+  /** 从后台获取当前标签页的资源列表 */
   function loadResources() {
     setLoading(true);
     sendMessage({ action: 'get_resources', tabId: currentTabId })
@@ -147,8 +165,9 @@
       });
   }
 
-  // ---- Trigger content script scan ----
+  // ========== 手动触发扫描 ==========
 
+  /** 通知 Content Script 立即执行 DOM 扫描 */
   function triggerScan() {
     setLoading(true);
     chrome.tabs.sendMessage(currentTabId, { action: 'scanNow' }).catch(() => {
@@ -159,9 +178,9 @@
     showToast('正在扫描...');
   }
 
-  // ---- Render ----
+  // ========== 渲染与筛选 ==========
 
-  // Size thresholds in bytes
+  // 文件大小筛选阈值定义（字节）
   const SIZE_RANGES = {
     'lt1m':     [0,              1024 * 1024],
     '1m-10m':   [1024 * 1024,    10 * 1024 * 1024],
@@ -217,6 +236,7 @@
     updateSearchClear();
   }
 
+  /** 搜索输入处理（带防抖） */
   function onSearchInput() {
     const val = els.searchInput.value;
     if (val === searchTerm) return;
@@ -229,6 +249,7 @@
     }, 150);
   }
 
+  /** 清除搜索 */
   function clearSearch() {
     els.searchInput.value = '';
     searchTerm = '';
@@ -236,10 +257,12 @@
     els.searchInput.focus();
   }
 
+  /** 更新清除搜索按钮的显示状态 */
   function updateSearchClear() {
     els.searchClear.style.display = searchTerm ? '' : 'none';
   }
 
+  /** 更新类型筛选按钮的高亮状态 */
   function updateFilterButtons() {
     document.querySelectorAll('.filter-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.type === currentFilter);
@@ -355,6 +378,7 @@
     els.countAudio.textContent = counts.audio;
   }
 
+  /** 渲染资源列表 */
   function renderList() {
     const list = els.resourceList;
     list.innerHTML = '';
@@ -377,9 +401,9 @@
       return;
     }
 
-    // Show only the most recent resources, sorted by detectedAt descending
+    // 按发现时间倒序排列，最多显示 200 项（性能限制）
     const sorted = [...filteredResources].sort((a, b) => b.detectedAt - a.detectedAt);
-    const toShow = sorted.slice(0, 200); // limit display
+    const toShow = sorted.slice(0, 200);
 
     for (const res of toShow) {
       const item = renderResourceItem(res);
@@ -481,7 +505,7 @@
     const displayName = hasGoodName ? res.name : (res.filename || 'unknown');
     const nameEl = template.querySelector('.resource-name');
     nameEl.textContent = displayName;
-    // Rename button
+    // 重命名按钮（允许用户手动修改文件名）
     const renameBtn = template.querySelector('.btn-rename');
     if (renameBtn) {
       renameBtn.addEventListener('click', (e) => {
@@ -574,10 +598,10 @@
     urlEl.textContent = res.url;
     urlEl.title = res.url;
 
-    // Action buttons — use explicit targets
+    // 操作按钮区
     const _actEl = template.querySelector('.resource-actions');
 
-    // Download
+    // 下载按钮
     _actEl.querySelector('button:first-child').addEventListener('click', () => {
       sendMessage({
         action: 'download_resource',
@@ -587,12 +611,12 @@
       showToast('下载已开始');
     });
 
-    // Copy URL
+    // 复制 URL 按钮
     _actEl.querySelector('button:nth-child(2)').addEventListener('click', () => {
       navigator.clipboard.writeText(res.url).then(() => {
         showToast('链接已复制');
       }).catch(() => {
-        // fallback
+        // 降级方案：使用 textarea 复制
         const ta = document.createElement('textarea');
         ta.value = res.url;
         document.body.appendChild(ta);
@@ -603,7 +627,7 @@
       });
     });
 
-    // Open in new tab
+    // 在新标签页中打开
     _actEl.querySelector('button:last-child').addEventListener('click', () => {
       window.open(res.url, '_blank');
     });
@@ -638,8 +662,9 @@
     }
   }
 
-  // ---- Rename ----
+  // ========== 重命名功能 ==========
 
+  /** 进入重命名模式：将名称文本替换为输入框 */
   function startRename(res, nameEl) {
     const currentName = nameEl.textContent;
     const input = document.createElement('input');
@@ -660,6 +685,7 @@
     input.addEventListener('blur', finish);
   }
 
+  /** 完成重命名：保存新名称并同步到后台 */
   function finishRename(res, nameEl, input) {
     const newName = input.value.trim();
     if (!newName) {
@@ -680,8 +706,14 @@
     sendMessage({ action: 'rename_resource', url: res.url, newName });
   }
 
-  // ---- Pairs & Merge ----
+  // ========== 音视频配对与合成 ==========
 
+  /**
+   * 从选中的资源中找出可配对的视频+音频组
+   * 配对逻辑：
+   * 1. 优先使用 groupId 配对的资源
+   * 2. 剩余未配对的资源中，手动将 video 和 audio 类型配对
+   */
   function getPairedResources(selected) {
     // Among selected URLs, find groups that contain both video and audio
     const groupMap = {};
@@ -730,6 +762,7 @@
     return pairs;
   }
 
+  /** 启动音视频合成下载 */
   function mergeDownload() {
     const pairs = getPairedResources(selectedUrls);
     if (pairs.length === 0) {
@@ -747,10 +780,11 @@
     showToast(`\u5DF2\u542F\u52A8 ${pairs.length} \u4E2A\u97F3\u89C6\u9891\u5408\u6210\u4E0B\u8F7D`);
   }
 
-  // ---- Preview modal ----
+  // ========== 预览弹窗 ==========
 
   let previewRes = null;
 
+  /** 打开展预览弹窗 */
   function openPreview(res) {
     previewRes = res;
     const overlay = els.previewOverlay;
@@ -817,6 +851,7 @@
     document.body.style.overflow = 'hidden';
   }
 
+  /** 关闭预览弹窗 */
   function closePreview() {
     const overlay = els.previewOverlay;
     overlay.style.display = 'none';
@@ -825,8 +860,9 @@
     previewRes = null;
   }
 
-  // ---- Download all visible ----
+  // ========== 批量下载 ==========
 
+  /** 下载所有选中的资源（含自动音视频合成配对） */
   function downloadSelected() {
     const urls = Array.from(selectedUrls);
     if (urls.length === 0) return;
@@ -895,8 +931,9 @@
     showToast('正在下载 ' + label);
   }
 
-  // ---- Clear ----
+  // ========== 清空资源 ==========
 
+  /** 清空当前标签页的资源列表 */
   function clearResources() {
     if (allResources.length === 0) return;
     sendMessage({ action: 'clear_resources', tabId: currentTabId });
@@ -909,8 +946,9 @@
     showToast('已清空');
   }
 
-  // ---- Sniffing toggle ----
+  // ========== 嗅探开关 ==========
 
+  /** 更新嗅探开关的 UI 状态 */
   function updateSniffingUI() {
     els.sniffToggle.classList.toggle('disabled', tabSniffingDisabled);
     els.sniffBanner.style.display = tabSniffingDisabled ? '' : 'none';
@@ -920,6 +958,7 @@
     els.scanBtn.style.cursor = tabSniffingDisabled ? 'not-allowed' : '';
   }
 
+  /** 切换当前标签页的嗅探开关 */
   function toggleTabSniffing() {
     sendMessage({ action: 'toggle_tab_sniffing', tabId: currentTabId }).then(response => {
       if (response) {
