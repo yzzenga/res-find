@@ -515,6 +515,57 @@
       const fmt = res.format || guessFormat(res.url, res.type);
       fmtBadge.textContent = fmt;
     }
+    // Type switcher (dropdown to manually override type)
+    const typeSwitcher = template.querySelector('.resource-type-switcher');
+    if (typeSwitcher) {
+      typeSwitcher.value = res.type;
+      typeSwitcher.addEventListener('change', () => {
+        const oldType = res.type;
+        const newType = typeSwitcher.value;
+        if (newType === oldType) return;
+
+        // Update local resource entry
+        res.type = newType;
+        res.format = guessFormat(res.url, newType);
+
+        // Update UI badges
+        badge.textContent = typeBadgeLabel(newType);
+        if (fmtBadge) fmtBadge.textContent = res.format;
+
+        // Update preview thumbnail icon
+        const preview = item.querySelector('.resource-preview');
+        if (preview && (oldType !== 'image' && oldType !== 'video')) {
+          // Only update if it was a fallback icon (not real media)
+          if (!preview.querySelector('img, video')) {
+            preview.innerHTML = '';
+            preview.className = 'resource-preview';
+            if (newType === 'audio') {
+              preview.classList.add('preview-audio');
+              preview.innerHTML = svgIcon('audio');
+            } else if (newType === 'stream') {
+              preview.classList.add('preview-fallback');
+              preview.innerHTML = svgIcon('stream');
+            }
+          }
+        }
+
+        // Remove pairing group badge hint if type changed
+        const groupBadge = item.querySelector('.group-badge');
+        if (groupBadge) {
+          groupBadge.textContent = 'P' + (newType === 'video' ? 'V' : 'A');
+        }
+
+        // Sync to background
+        sendMessage({
+          action: 'change_resource_type',
+          url: res.url,
+          newType
+        });
+
+        // Re-run filter to possibly include/exclude this item
+        applyFilter();
+      });
+    }
     const sizeEl = template.querySelector('.resource-size');
     sizeEl.textContent = formatSize(res.size);
 
@@ -570,13 +621,13 @@
         ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> 下载选中 (${count})`
         : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> 下载选中`;
 
-      // Check if any selected pair has both video+audio with same groupId
+      // Check if selected items form any video+audio pairs
       if (mergeBtn) {
         const pairs = getPairedResources(selectedUrls);
         if (pairs.length > 0) {
           mergeBtn.style.display = '';
           mergeBtn.disabled = false;
-          mergeBtn.textContent = `\u97F3\u89C6\u9891\u5408\u6210\u4E0B\u8F7D (${pairs.length})`;
+          mergeBtn.textContent = `音视频合成下载 (${pairs.length})`;
         } else {
           mergeBtn.style.display = 'none';
           mergeBtn.disabled = true;
@@ -635,22 +686,47 @@
     // Among selected URLs, find groups that contain both video and audio
     const groupMap = {};
     if (!allResources.length) return [];
+
+    // Step 1: collect groupId-based matches
     for (const r of allResources) {
       if (selected.has(r.url) && r.groupId) {
         if (!groupMap[r.groupId]) groupMap[r.groupId] = [];
         groupMap[r.groupId].push(r);
       }
     }
+
     const pairs = [];
     for (const gid of Object.keys(groupMap)) {
       const members = groupMap[gid];
       const videos = members.filter(m => m.type === 'video');
       const audios = members.filter(m => m.type === 'audio');
-      // Pair first video with first audio
       if (videos.length > 0 && audios.length > 0) {
         pairs.push({ videoUrl: videos[0].url, audioUrl: audios[0].url, baseName: videos[0].name || videos[0].filename || 'merged' });
       }
     }
+
+    // Step 2: look for orphan video+audio pairs (user manually corrected types)
+    // Only match pairs that are NOT already matched via groupId
+    const matchedUrls = new Set();
+    for (const p of pairs) {
+      matchedUrls.add(p.videoUrl);
+      matchedUrls.add(p.audioUrl);
+    }
+    const unmatchedSelected = Array.from(selected).filter(url => !matchedUrls.has(url));
+    const unmatchedResources = allResources.filter(r => unmatchedSelected.includes(r.url));
+    const orphanVideos = unmatchedResources.filter(r => r.type === 'video');
+    const orphanAudios = unmatchedResources.filter(r => r.type === 'audio');
+    const orphanCount = Math.min(orphanVideos.length, orphanAudios.length);
+    for (let i = 0; i < orphanCount; i++) {
+      const v = orphanVideos[i];
+      const a = orphanAudios[i];
+      pairs.push({
+        videoUrl: v.url,
+        audioUrl: a.url,
+        baseName: v.name || v.filename || 'merged'
+      });
+    }
+
     return pairs;
   }
 
@@ -755,7 +831,51 @@
     const urls = Array.from(selectedUrls);
     if (urls.length === 0) return;
 
-    // Find the resource details for each URL
+    // Check if selected items form video+audio pairs (auto-merge)
+    const pairs = getPairedResources(selectedUrls);
+    if (pairs.length > 0) {
+      // Count how many URLs are consumed by pairs
+      const pairedUrls = new Set();
+      for (const p of pairs) {
+        pairedUrls.add(p.videoUrl);
+        pairedUrls.add(p.audioUrl);
+      }
+      // If ALL selected URLs are part of pairs, fully merge
+      // Otherwise merge the pairs and download the rest individually
+      const unpaired = urls.filter(url => !pairedUrls.has(url));
+
+      // Trigger merges
+      for (const pair of pairs) {
+        sendMessage({
+          action: 'merge_download',
+          videoUrl: pair.videoUrl,
+          audioUrl: pair.audioUrl,
+          baseName: pair.baseName
+        });
+      }
+
+      // Download unpaired items individually
+      if (unpaired.length > 0) {
+        const urlMap = new Map(allResources.map(r => [r.url, r]));
+        for (const url of unpaired) {
+          const res = urlMap.get(url);
+          sendMessage({
+            action: 'download_resource',
+            url,
+            filename: res ? res.filename : undefined
+          });
+        }
+      }
+
+      const totalJobs = pairs.length + unpaired.length;
+      const parts = [];
+      if (pairs.length) parts.push(pairs.length + ' 个合成');
+      if (unpaired.length) parts.push(unpaired.length + ' 个单独下载');
+      showToast('正在处理: ' + parts.join(', '));
+      return;
+    }
+
+    // No pairs: download each individually
     const toDownload = [];
     const urlMap = new Map(allResources.map(r => [r.url, r]));
     for (const url of urls) {
@@ -770,7 +890,9 @@
         filename: item.filename
       });
     }
-    showToast(`正在下载 ${toDownload.length} 个文件`);
+
+    const label = toDownload.length > 0 ? toDownload.length + ' 个文件' : '';
+    showToast('正在下载 ' + label);
   }
 
   // ---- Clear ----

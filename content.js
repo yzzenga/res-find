@@ -16,6 +16,17 @@
   let scanTimer = null;
   let observer = null;
   let sniffingEnabled = true;      // controlled by popup toggle
+  let extensionInvalidated = false; // set to true when chrome.runtime dies
+
+  // When extension context is invalidated we just set a flag that gates
+  // all further extension API calls. Timers/observers remain alive but
+  // return early — no cleanup needed since the page will eventually
+  // navigate or be refreshed.
+  function handleInvalidated() {
+    if (extensionInvalidated) return;
+    extensionInvalidated = true;
+    if (batchTimer) { clearTimeout(batchTimer); batchTimer = null; }
+  }
 
   // ---- Helpers ----
 
@@ -288,19 +299,26 @@
   }
 
   function scheduleFlush() {
-    if (!sniffingEnabled) return;
+    if (!sniffingEnabled || extensionInvalidated) return;
     if (batchTimer) clearTimeout(batchTimer);
     batchTimer = setTimeout(flushBatch, BATCH_DEBOUNCE);
   }
 
   function flushBatch() {
     batchTimer = null;
+    if (extensionInvalidated) return;
     if (pendingBatch.size === 0) return;
     const entries = Array.from(pendingBatch.values());
     pendingBatch.clear();
     for (const entry of entries) {
       const msg = { action: 'report_resource', ...entry };
-      chrome.runtime.sendMessage(msg).catch(() => {});
+      try {
+        chrome.runtime.sendMessage(msg).catch(() => {});
+      } catch (e) {
+        // Extension context invalidated — stop trying to send
+        handleInvalidated();
+        return;
+      }
     }
   }
 
@@ -343,6 +361,7 @@
   // ---- DOM scanning ----
 
   function scanDOM() {
+    if (extensionInvalidated) return;
     const results = [];
 
     // Images
@@ -757,6 +776,7 @@
 
   // Flush any remaining on page unload
   window.addEventListener('beforeunload', () => {
+    if (extensionInvalidated) return;
     flushBatch();
     if (scanTimer) clearInterval(scanTimer);
     if (observer) observer.disconnect();

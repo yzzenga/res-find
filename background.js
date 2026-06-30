@@ -374,6 +374,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
 
+    case 'change_resource_type': {
+      // Manually override a resource's type (e.g. video -> audio for misidentified streams)
+      const tabId = sender.tab?.id || message.tabId;
+      if (tabId >= 0 && message.url && message.newType) {
+        const meta = tabResourceMeta.get(tabId);
+        if (meta) {
+          const entry = meta.get(message.url);
+          if (entry) {
+            entry.type = message.newType;
+            entry.format = guessFormat(entry.url, message.newType);
+            entry.filename = getFilename(entry.url, message.newType, entry.name);
+          }
+        }
+      }
+      sendResponse({ ok: true });
+      break;
+    }
+
     case 'merge_download': {
       // Download paired video+audio and open merge page
       const { videoUrl, audioUrl, baseName, tabId: msgTabId } = message;
